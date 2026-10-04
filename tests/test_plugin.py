@@ -20,6 +20,7 @@ from astrbot_plugin_x_images.service import (  # noqa: E402
     Lookup,
     Photo,
     PluginError,
+    Post,
     Settings,
     api_endpoint,
     extract_tweet_ids,
@@ -235,6 +236,69 @@ class ParsingTests(unittest.TestCase):
 
 
 class ServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_post_search_includes_text_only_posts_and_verified_body(self):
+        requests = []
+
+        def handler(req):
+            requests.append(req)
+            if req.url.host == "relay.test":
+                payload = json.loads(req.content)
+                self.assertIn(
+                    "Posts do not need to contain images",
+                    payload["input"][0]["content"],
+                )
+                return httpx.Response(
+                    200,
+                    json=search_response(
+                        "https://x.com/NASA/status/123", text="invented summary"
+                    ),
+                )
+            data = tweet()
+            data["tweet"].update(
+                text="Actual text\n原始正文",
+                created_at="Mon Oct 05 00:00:00 +0000 2026",
+            )
+            return httpx.Response(200, json=data)
+
+        service = await self.service(
+            handler, api_key="secret", base_url="https://relay.test"
+        )
+        result = await service.lookup("from:NASA", photos_only=False)
+        self.assertEqual(len(requests), 2)
+        self.assertEqual(result.posts[0].text, "Actual text\n原始正文")
+        self.assertEqual(result.posts[0].author, "NASA")
+        self.assertEqual(result.posts[0].source, "https://x.com/i/status/123")
+        self.assertEqual(result.photos, [])
+        self.assertEqual(result.resolved_count, 1)
+
+    async def test_direct_posts_need_no_key_and_keep_successes_in_order(self):
+        def handler(req):
+            self.assertEqual(req.url.host, "api.fxtwitter.com")
+            sid = req.url.path.split("/")[-1]
+            if sid == "456":
+                return httpx.Response(404)
+            data = tweet(sid)
+            data["tweet"]["text"] = "Post " + sid
+            return httpx.Response(200, json=data)
+
+        service = await self.service(handler)
+        result = await service.lookup(
+            "https://x.com/a/status/123 https://x.com/a/status/456 https://x.com/a/status/789",
+            links_only=True,
+            photos_only=False,
+        )
+        self.assertEqual([p.tweet_id for p in result.posts], ["123", "789"])
+        self.assertEqual(len(result.warnings), 1)
+        with self.assertRaises(PluginError):
+            await service.lookup("not a link", links_only=True, photos_only=False)
+
+    async def test_post_text_type_is_validated(self):
+        data = tweet()
+        data["tweet"]["text"] = {"unexpected": "object"}
+        service = await self.service(lambda req: httpx.Response(200, json=data))
+        with self.assertRaisesRegex(PluginError, "正文"):
+            await service.resolve("123")
+
     async def test_uncited_output_does_not_trigger_tweet_requests(self):
         requests = []
 
@@ -311,7 +375,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(
                 json.loads(req.content),
                 {
-                    "model": "grok-imagine-1.0",
+                    "model": "grok-imagine-image-2.0",
                     "prompt": "a cat",
                     "n": 2,
                     "size": "1024x1024",
@@ -441,7 +505,12 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
 
         async def resolve(sid):
             if sid == "123":
-                return [Photo(sid, "NASA", "https://pbs.twimg.com/media/real.jpg")]
+                return Post(
+                    sid,
+                    "NASA",
+                    "正文",
+                    photos=[Photo(sid, "NASA", "https://pbs.twimg.com/media/real.jpg")],
+                )
             try:
                 await asyncio.Event().wait()
             finally:
@@ -654,6 +723,63 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_post_command_and_tools_send_verified_text_without_images(self):
+        post = Post("123", "NASA", "真实正文", "2026-10-05")
+        self.plugin.service.lookup.return_value = Lookup(posts=[post], resolved_count=1)
+        self.event.message_str = "/grok 推文 from:NASA --count 2"
+        self.event.plain_result = lambda text: text
+        result = [r async for r in self.plugin.grok_command(self.event)]
+        self.assertIn("已发送 1 条推文", result[0])
+        self.plugin.service.lookup.assert_awaited_with(
+            "from:NASA", links_only=False, photos_only=False
+        )
+        message = self.event.send.await_args.args[0]
+        self.assertEqual(len(message), 1)
+        self.assertIn("真实正文", message[0][1])
+        self.assertIn(post.source, message[0][1])
+        result = json.loads(await self.plugin.get_x_post(self.event, post.source))
+        self.assertEqual(result["posts"][0]["text"], "真实正文")
+        self.assertEqual(result["kind"], "posts")
+        self.plugin.service.lookup.assert_awaited_with(
+            post.source, links_only=True, photos_only=False
+        )
+        self.plugin.service.download.assert_not_awaited()
+        self.plugin.service.generate.assert_not_awaited()
+
+    async def test_posts_truncation_partial_send_and_independent_count_limit(self):
+        posts = [Post(str(i), "NASA", "文" * 3001) for i in range(6)]
+        self.plugin.service.lookup.return_value = Lookup(posts=posts, resolved_count=6)
+        self.event.send.side_effect = [None, RuntimeError("secret")]
+        result = json.loads(await self.plugin.search_x_posts(self.event, "NASA", 6))
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["sent_count"], 1)
+        self.assertEqual(len(result["posts"]), 1)
+        self.assertTrue(result["posts"][0]["text_truncated"])
+        self.assertEqual(len(result["posts"][0]["text"]), 3000)
+        self.assertIn("已截断", self.event.send.await_args_list[0].args[0][0][1])
+        self.assertNotIn("secret", json.dumps(result))
+        self.plugin.service.lookup.reset_mock()
+        result = json.loads(await self.plugin.search_x_posts(self.event, "NASA", 11))
+        self.assertEqual(result["sent_count"], 0)
+        self.plugin.service.lookup.assert_not_awaited()
+
+    async def test_post_empty_body_and_failed_resolution_are_distinct(self):
+        self.plugin.service.lookup.return_value = Lookup(
+            posts=[Post("123", "NASA", "")], resolved_count=1
+        )
+        result = json.loads(await self.plugin.search_x_posts(self.event, "NASA"))
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("无文字正文", self.event.send.await_args.args[0][0][1])
+        self.plugin.service.lookup.return_value = Lookup(warnings=["404"])
+        result = json.loads(await self.plugin.search_x_posts(self.event, "NASA"))
+        self.assertEqual(result["error_code"], "post_resolution_failed")
+        self.assertEqual(result["sent_count"], 0)
+
+    async def test_explicit_image_command_keeps_image_delivery(self):
+        self.event.message_str = "/grok 图片 from:NASA --count 1"
+        self.assertIn("已发送 1 张", await self.plugin._command(self.event))
+        self.plugin.service.lookup.assert_awaited_with("from:NASA", links_only=False)
+
     async def test_resolution_failure_is_not_reported_as_no_images(self):
         self.plugin.service.lookup.return_value = Lookup(warnings=["推文不存在（404）"])
         result = await self.plugin._run(

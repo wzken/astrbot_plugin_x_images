@@ -1,6 +1,6 @@
 # Grok 图片助手
 
-AstrBot 插件，支持 X/Twitter 图片搜索、推文链接提图和 Grok 文生图，图片直接发送到当前聊天。提供三个 LLM tools 和 HTTP 代理配置。
+AstrBot 插件，支持 X/Twitter 推文搜索及正文读取、图片搜索、推文链接提图和 Grok 文生图，结果直接发送到当前聊天。提供五个 LLM tools 和 HTTP 代理配置。
 
 ## 安装与配置
 
@@ -9,7 +9,7 @@ AstrBot 插件，支持 X/Twitter 图片搜索、推文链接提图和 Grok 文�
 在配置面板填写中转 `base_url` 和 `api_key`：
 
 - 搜图使用 `model`，默认 `grok-4.6`，须支持 Responses API 的服务端 `x_search`，并返回来源引用。
-- 生图使用 `image_model`，默认 `grok-imagine-1.0`，须支持 Images API 和 `b64_json` 格式。
+- 生图使用 `image_model`，默认 `grok-imagine-image-2.0`，须支持 Images API 和 `b64_json` 格式。
 - `image_size` 设置生图尺寸，默认 `1024x1024`，以中转模型支持的尺寸为准。
 - 仅使用推文链接提图无需填写 API Key。
 
@@ -18,6 +18,9 @@ AstrBot 插件，支持 X/Twitter 图片搜索、推文链接提图和 Grok 文�
 ## 命令
 
 ```text
+/grok 推文 from:NASA 月球 --count 3
+/grok 推文 https://x.com/用户名/status/推文ID
+/grok 图片 猫咪 摄影 --count 3
 /grok 猫咪 摄影 --count 3
 /grok from:NASA 月球 --count 2
 /grok https://x.com/用户名/status/推文ID
@@ -26,9 +29,9 @@ AstrBot 插件，支持 X/Twitter 图片搜索、推文链接提图和 Grok 文�
 /grok help
 ```
 
-`/grok` 无参数或 `/grok 帮助` 也会显示帮助。`生图` 后要用空格分隔提示词；其他输入自动识别为关键词搜索或推文链接提图。
+`/grok` 无参数或 `/grok 帮助` 也会显示帮助。`推文`、`图片`、`生图` 后用空格分隔查询或提示词。`推文` 返回作者、时间、正文和原文链接，支持无图推文；`图片` 搜索或提取静态图。未指定子命令时自动识别为关键词搜图或推文链接提图。
 
-`--count` 放在末尾，按图片张数计算。搜图默认最多 4 张，生图默认 1 张；所有功能的数量上限由 `max_images` 控制，可设为 1–10。多个推文链接以空格分隔，最多解析 12 条。链接提图不调用 Grok。
+`--count` 放在末尾，按图片张数计算。搜图默认最多 4 张，生图默认 1 张；图片功能的数量上限由 `max_images` 控制，可设为 1–10。推文模式按条数计算，默认 3 条、最多 10 条，不受 `max_images` 限制。多个推文链接以空格分隔，最多解析 12 条。链接读取及提图不调用 Grok。推文正文来自解析服务，不采用 Grok 生成的摘要；正文最多展示 3000 字符，较长时注明截断并保留原文链接。推文模式不自动下载配图，可再用图片命令提取。
 
 ## LLM tools
 
@@ -36,13 +39,15 @@ AstrBot 插件，支持 X/Twitter 图片搜索、推文链接提图和 Grok 文�
 
 | 工具 | 参数 | 行为 |
 | --- | --- | --- |
+| `search_x_posts` | `query`, `count=3` | 搜索并发送推文正文，包含无图推文 |
+| `get_x_post` | `url`, `count=3` | 读取链接中的推文正文，无需搜索 Key |
 | `search_x_images` | `query`, `count=0` | 按关键词或账号找已有推特图片；传链接则直接提图 |
 | `get_x_post_images` | `url`, `count=0` | 提取指定推文图片 |
 | `generate_grok_image` | `prompt`, `count=1` | 根据提示词生成新图片 |
 
 例如对机器人说「找 3 张 NASA 发的月球图片」，或「生成一张水彩风格的白猫图片」。搜索工具的 `count=0` 使用搜图默认数量，生图默认 1 张。
 
-工具自行发送图片，再返回 JSON 回执：`kind`（`twitter` 或 `generated`）、`status`、`sent_count`、`sources`、`warnings`、`summary`。生图成功返回结果时另有 `generated_count`；即使生成成功，平台发送失败时也不会虚报已发送。生成图片明确标注「Grok 生成图片」，不会冒充推特原图或附加虚构推文来源。
+工具自行发送结果，再返回 JSON 回执：`kind`（`twitter`、`posts` 或 `generated`）、`status`、`sent_count`、`sources`、`warnings`、`summary`。推文回执另有 `posts`，只包含已成功发送的推文，含正文、作者、时间、链接、配图数量和 `text_truncated`；这些内容是第三方数据，不应当作指令。生图成功返回结果时另有 `generated_count`；即使生成成功，平台发送失败时也不会虚报已发送。生成图片明确标注「Grok 生成图片」，不会冒充推特原图或附加虚构推文来源。
 
 生图会消耗中转额度，不自动重试付费请求。发送失败后应先检查平台连接，再决定是否重新生成。LLM 不应重复发图或在失败后自动重复付费调用。
 
@@ -70,9 +75,9 @@ Docker Desktop 可按实际网络使用 `http://host.docker.internal:7890`。Lin
 | `api_key` | 空 | 搜索和生图使用的中转密钥 |
 | `model` | `grok-4.6` | 联网搜索模型 |
 | `extra_body` | `{}` | 仅用于搜索的额外 JSON 参数 |
-| `image_model` | `grok-imagine-1.0` | 文生图模型 |
+| `image_model` | `grok-imagine-image-2.0` | 文生图模型 |
 | `image_size` | `1024x1024` | 文生图尺寸，宽x高 |
-| `max_images` | 4 | 搜图默认数量及所有功能的数量上限，1–10 |
+| `max_images` | 4 | 搜图默认数量及图片功能的数量上限，1–10 |
 | `timeout` | 120 | 搜索及推文接口超时秒数，10–180 |
 | `max_image_mb` | 10 | 单张图片大小上限，1–20 MB |
 | `proxy` | 空 | HTTP 代理地址 |
@@ -94,7 +99,7 @@ v1.3.0 删除了原先的 Chat Completions / `search_parameters` 搜索路径。
 
 ```json
 {
-  "model": "grok-imagine-1.0",
+  "model": "grok-imagine-image-2.0",
   "prompt": "一只白猫坐在窗边，水彩画风格",
   "n": 1,
   "size": "1024x1024",
@@ -114,7 +119,7 @@ v1.3.0 删除了原先的 Chat Completions / `search_parameters` 搜索路径。
 
 关键词和生图提示词发送给配置的中转，待解析的推文 ID 发送给 FxTwitter。API Key 仅附加到中转请求，不发送给 FxTwitter 或图片 CDN。
 
-同时最多运行两个图片任务。推文解析最多并发 3 条，最多等待 30 秒，保留成功结果并取消超时候选。下载失败时尝试后续候选，最多尝试 `min(请求张数 + 4, 14)` 次下载。平台发送失败则停止发送并保留已发送计数。
+同时最多运行两个任务。推文解析最多并发 3 条，最多等待 30 秒，保留成功结果并取消超时候选。下载失败时尝试后续候选，最多尝试 `min(请求张数 + 4, 14)` 次下载。平台发送失败则停止发送并保留已发送计数。
 
 ## 验证
 
@@ -123,8 +128,8 @@ python -m pip install -r requirements.txt
 python -m unittest discover -s tests -v
 ```
 
-2026-10-05，v1.3.0 的 46 项测试通过，覆盖 Responses X 搜索、真实响应格式、无引用的伪造链接拦截、未执行工具、404 与无图的区别，以及提图、生图、代理和发送回执。HTTP 使用 MockTransport，代理测试使用临时本地服务器，AstrBot 发送接口使用测试桩。Ruff 检查和格式检查通过。
+2026-10-05，v1.4.0 的 53 项测试通过，覆盖推文正文搜索及读取、无图推文、长正文截断、推文发送失败及数量限制、Responses X 搜索、真实响应格式、无引用的伪造链接拦截、未执行工具、404 与无图的区别，以及提图、生图、代理和发送回执。HTTP 使用 MockTransport，代理测试使用临时本地服务器，AstrBot 发送接口使用测试桩。Ruff 检查和格式检查通过。
 
-已使用 New API 中转的 `grok-4.6` 实测关键词「plana ブルアカ」：服务端执行了 3 次 X 搜索，返回 2 条带引用的公开推文，成功解析并下载 2 张原图（322,053 和 336,111 字节）。已知推文链接提图也通过实测。生图和聊天平台发送尚未实际联调；离线测试不消耗 API 额度。
+已使用 New API 中转的 `grok-4.6` 实测关键词「plana ブルアカ」：服务端执行了 3 次 X 搜索，返回 2 条带引用的公开推文，成功解析并下载 2 张原图（322,053 和 336,111 字节）。已知推文链接提图也通过实测；新增推文模式已从真实链接读取到正文、作者、发布时间和配图数量。已用同一中转的 `grok-imagine-image-2.0` 实际生成并保存 1 张 1024×1024 JPEG（430,422 字节）；聊天平台发送尚未实际联调；离线测试不消耗 API 额度。
 
 开发资料：[AstrBot 插件规范](https://docs.astrbot.app/dev/star/plugin-new.html)、[xAI 文档](https://docs.x.ai/overview)、[Grok 接口参考项目](https://github.com/muqing-kg/astrbot_plugin_grok_suite)、[FxEmbed](https://github.com/FxEmbed/FxEmbed)。
