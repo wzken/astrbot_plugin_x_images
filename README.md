@@ -1,0 +1,124 @@
+# Grok 图片助手
+
+AstrBot 插件，支持 X/Twitter 图片搜索、推文链接提图和 Grok 文生图，图片直接发送到当前聊天。提供三个 LLM tools 和 HTTP 代理配置。
+
+## 安装与配置
+
+要求 AstrBot `>=4.13.0,<5`。在插件管理中上传 ZIP 安装；也可将目录放到 `AstrBot/data/plugins/astrbot_plugin_x_images`，在 AstrBot 的 Python 环境中执行 `python -m pip install -r requirements.txt`，随后重启或重载插件。
+
+在配置面板填写中转 `base_url` 和 `api_key`：
+
+- 搜图使用 `model`，默认 `grok-4-fast`，须支持实时联网搜索。
+- 生图使用 `image_model`，默认 `grok-imagine-1.0`，须支持 Images API 和 `b64_json` 格式。
+- `image_size` 设置生图尺寸，默认 `1024x1024`，以中转模型支持的尺寸为准。
+- 仅使用推文链接提图无需填写 API Key。
+
+模型名以你的中转实际提供的名称为准。保存配置后重载插件。
+
+## 命令
+
+```text
+/grok 猫咪 摄影 --count 3
+/grok from:NASA 月球 --count 2
+/grok https://x.com/用户名/status/推文ID
+/grok 生图 一只白猫坐在窗边，水彩画风格
+/grok 生图 雨夜的未来城市 --count 2
+/grok help
+```
+
+`/grok` 无参数或 `/grok 帮助` 也会显示帮助。`生图` 后要用空格分隔提示词；其他输入自动识别为关键词搜索或推文链接提图。
+
+`--count` 放在末尾，按图片张数计算。搜图默认最多 4 张，生图默认 1 张；所有功能的数量上限由 `max_images` 控制，可设为 1–10。多个推文链接以空格分隔，最多解析 12 条。链接提图不调用 Grok。
+
+## LLM tools
+
+在 AstrBot 工具管理中启用以下工具，并使用支持工具调用的聊天模型和 Agent runner。
+
+| 工具 | 参数 | 行为 |
+| --- | --- | --- |
+| `search_x_images` | `query`, `count=0` | 按关键词或账号找已有推特图片；传链接则直接提图 |
+| `get_x_post_images` | `url`, `count=0` | 提取指定推文图片 |
+| `generate_grok_image` | `prompt`, `count=1` | 根据提示词生成新图片 |
+
+例如对机器人说「找 3 张 NASA 发的月球图片」，或「生成一张水彩风格的白猫图片」。搜索工具的 `count=0` 使用搜图默认数量，生图默认 1 张。
+
+工具自行发送图片，再返回 JSON 回执：`kind`（`twitter` 或 `generated`）、`status`、`sent_count`、`sources`、`warnings`、`summary`。生图成功返回结果时另有 `generated_count`；即使生成成功，平台发送失败时也不会虚报已发送。生成图片明确标注「Grok 生成图片」，不会冒充推特原图或附加虚构推文来源。
+
+生图会消耗中转额度，不自动重试付费请求。发送失败后应先检查平台连接，再决定是否重新生成。LLM 不应重复发图或在失败后自动重复付费调用。
+
+整个任务最长 150 秒，建议 AstrBot 工具执行超时设为至少 180 秒。
+
+## HTTP 代理
+
+`proxy` 填写 HTTP 代理，例如：
+
+```text
+http://127.0.0.1:7890
+```
+
+端口以代理软件的 HTTP/Mixed 端口配置为准。HTTP 代理可通过 CONNECT 访问 HTTPS 接口；这里的地址仍填写 `http://`。留空时使用 httpx 的环境代理设置（环境代理也应设置为 HTTP 代理地址）。
+
+`proxy_api=true` 时，搜索、生图、推文解析和图片下载共用代理设置。国内中转需要直连时，关闭「Grok 中转请求也使用代理」：搜索和生图忽略配置及环境代理，推文解析、图片下载仍使用 `proxy`。
+
+Docker Desktop 可按实际网络使用 `http://host.docker.internal:7890`。Linux Docker 需配置宿主机网关映射或填写可达的局域网地址，并允许容器连接代理。容器内的 `127.0.0.1` 指容器自身。
+
+## 配置项
+
+| 字段 | 默认 | 说明 |
+| --- | --- | --- |
+| `base_url` | 空 | 中转域名或以 `/v1` 结尾的基础地址 |
+| `api_key` | 空 | 搜索和生图使用的中转密钥 |
+| `model` | `grok-4-fast` | 联网搜索模型 |
+| `extra_body` | `{}` | 仅用于搜索的额外 JSON 参数 |
+| `image_model` | `grok-imagine-1.0` | 文生图模型 |
+| `image_size` | `1024x1024` | 文生图尺寸，宽x高 |
+| `max_images` | 4 | 搜图默认数量及所有功能的数量上限，1–10 |
+| `timeout` | 60 | 搜索及推文接口超时秒数，10–180 |
+| `max_image_mb` | 10 | 单张图片大小上限，1–20 MB |
+| `proxy` | 空 | HTTP 代理地址 |
+| `proxy_api` | true | 搜索和生图使用代理；false 为中转强制直连 |
+
+## 中转接口
+
+只填写域名时会补 `/v1`。不要在 `base_url` 中填写完整的 `/chat/completions` 或 `/images/generations` 地址。
+
+搜索使用 `POST /v1/chat/completions`，发送 `model`、`messages`、`stream:false` 和 `search_parameters:{"mode":"on"}`。`extra_body` 仅作用于搜索，不能覆盖 `model/messages/stream`。中转必须真正提供联网能力，普通 Chat Completions 兼容并不代表支持联网。
+
+生图使用 `POST /v1/images/generations`，请求示例：
+
+```json
+{
+  "model": "grok-imagine-1.0",
+  "prompt": "一只白猫坐在窗边，水彩画风格",
+  "n": 1,
+  "size": "1024x1024",
+  "response_format": "b64_json"
+}
+```
+
+生图读取标准 `data[].b64_json` 返回值，验证 Base64、图片字节类型和大小后直接发送。若中转仅返回 URL，会明确提示不支持当前返回格式；不会自动改协议重试。单次生图请求超时 120 秒，整个响应最多 64 MB。单张图片仍受 `max_image_mb` 限制，上游少返回图片或部分图片无效时会报告实际结果。
+
+本插件按当前中转需求实现，不自动切换模型或接口。暂不支持图生图、图片编辑和视频生成。
+
+## 推特图片来源
+
+搜索只让 Grok 提供候选推文链接，不直接采用模型编造的图片地址。随后调用 [FxTwitter/FxEmbed](https://docs.fxembed.com/api/introduction) 的 `https://api.fxtwitter.com/status/{id}`，核对推文 ID 并读取 `tweet.media.photos`。仅下载 `https://pbs.twimg.com/media/…` 上的原图，检查大小及 JPEG/PNG/WebP 文件头，不跟随重定向。图片附作者和推文来源，插件不保存磁盘缓存。
+
+账号、时间、主题条件交由 Grok 搜索，相关性和时效性依赖中转模型；插件核验推文和媒体是否存在，不保证自然语言筛选条件完全准确，也不抓取账号完整时间线。只提取推文本身的静态照片，不提取头像、视频封面、GIF 或引用推文图片，不绕过私密推文权限。解析服务不可用时会报告失败。
+
+关键词和生图提示词发送给配置的中转，待解析的推文 ID 发送给 FxTwitter。API Key 仅附加到中转请求，不发送给 FxTwitter 或图片 CDN。
+
+同时最多运行两个图片任务。推文解析最多并发 3 条，最多等待 30 秒，保留成功结果并取消超时候选。下载失败时尝试后续候选，最多尝试 `min(请求张数 + 4, 14)` 次下载。平台发送失败则停止发送并保留已发送计数。
+
+## 验证
+
+```bash
+python -m pip install -r requirements.txt
+python -m unittest discover -s tests -v
+```
+
+2026-10-05，v1.2.0 的 35 项测试通过，覆盖搜图、提图、生图请求及返回解析、默认生图数量、部分失败、发送回执、HTTP 代理路由和卸载取消。HTTP 使用 MockTransport，代理测试使用临时本地服务器，AstrBot 发送接口使用测试桩。Ruff 检查和格式检查通过。
+
+此前已实测公开推文 `1848831595014459513` 解析出 3 张照片，并下载首张 1,284,251 字节的 JPEG。真实中转搜索、生图及聊天平台发送仍需填入你的配置后联调。测试不会消耗 API 额度。
+
+开发资料：[AstrBot 插件规范](https://docs.astrbot.app/dev/star/plugin-new.html)、[xAI 文档](https://docs.x.ai/overview)、[Grok 接口参考项目](https://github.com/muqing-kg/astrbot_plugin_grok_suite)、[FxEmbed](https://github.com/FxEmbed/FxEmbed)。

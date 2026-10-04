@@ -1,0 +1,68 @@
+{
+  "base_url": {
+    "description": "Grok 中转 Base URL",
+    "type": "string",
+    "default": "",
+    "hint": "例如 https://你的中转域名/v1。搜图需要 Chat Completions 联网能力，生图需要 images/generations 接口。"
+  },
+  "api_key": {
+    "description": "Grok 中转 API Key",
+    "type": "string",
+    "default": "",
+    "hint": "搜索和生图需要；推文链接提图无需 Key。请勿把 Key 发到聊天中。"
+  },
+  "model": {
+    "description": "联网搜索模型",
+    "type": "string",
+    "default": "grok-4-fast",
+    "hint": "填写中转实际提供且支持实时搜索的模型名。"
+  },
+  "extra_body": {
+    "description": "搜索额外请求参数（JSON）",
+    "type": "text",
+    "default": "{}",
+    "hint": "默认发送 search_parameters: {mode: on}，与参考插件一致。只按中转文档调整；不允许覆盖 model/messages/stream。"
+  },
+  "image_model": {
+    "description": "生图模型",
+    "type": "string",
+    "default": "grok-imagine-1.0",
+    "hint": "填写中转实际提供的文生图模型名，必须支持 /v1/images/generations 和 b64_json 返回格式。"
+  },
+  "image_size": {
+    "description": "生图尺寸",
+    "type": "string",
+    "default": "1024x1024",
+    "hint": "格式为宽x高，例如 1024x1024、1280x720；以你的中转模型支持的尺寸为准。"
+  },
+  "max_images": {
+    "description": "搜图默认数量及所有功能的数量上限",
+    "type": "int",
+    "default": 4,
+    "hint": "1–10；搜图默认使用此数量，生图默认 1 张。命令和 LLM tool 均不能超过此上限。"
+  },
+  "timeout": {
+    "description": "接口请求超时（秒）",
+    "type": "int",
+    "default": 60,
+    "hint": "10–180；生图单次请求超时 120 秒，图片下载超时 20 秒，整个任务最长 150 秒。"
+  },
+  "max_image_mb": {
+    "description": "单张图片大小上限（MB）",
+    "type": "int",
+    "default": 10,
+    "hint": "1–20；超过上限会跳过并报告。"
+  },
+  "proxy": {
+    "description": "HTTP 代理（可选）",
+    "type": "string",
+    "default": "",
+    "hint": "例如 http://127.0.0.1:7890，支持通过 HTTP 代理访问 HTTPS 接口。用于推文解析、图片下载；中转请求是否使用由下一项控制。留空使用环境代理；Docker 内需填写容器可达地址。"
+  },
+  "proxy_api": {
+    "description": "Grok 中转请求也使用代理",
+    "type": "bool",
+    "default": true,
+    "hint": "开启时搜索、生图与图片下载使用相同代理配置。若国内中转需直连，请关闭；关闭后搜索和生图不使用配置代理或环境代理，推文解析与图片下载仍使用上面的代理配置。"
+  }
+}

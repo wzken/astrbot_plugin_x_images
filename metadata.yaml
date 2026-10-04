@@ -1,0 +1,7 @@
+name: astrbot_plugin_x_images
+display_name: Grok 图片助手
+desc: 使用 Grok 中转搜推特图片及生成图片，支持推文链接提取、HTTP 代理和 LLM 工具直接发图。
+version: v1.2.0
+author: wzken
+repo: https://github.com/wzken/astrbot_plugin_x_images
+astrbot_version: ">=4.13.0,<5"
