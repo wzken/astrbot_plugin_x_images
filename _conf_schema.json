@@ -3,7 +3,7 @@
     "description": "Grok 中转 Base URL",
     "type": "string",
     "default": "",
-    "hint": "例如 https://你的中转域名/v1。搜图需要 Chat Completions 联网能力，生图需要 images/generations 接口。"
+    "hint": "例如 https://你的中转域名/v1。搜图需要 Responses API + 服务端 x_search，并返回来源引用；生图需要 images/generations 接口。"
   },
   "api_key": {
     "description": "Grok 中转 API Key",
@@ -14,14 +14,14 @@
   "model": {
     "description": "联网搜索模型",
     "type": "string",
-    "default": "grok-4-fast",
-    "hint": "填写中转实际提供且支持实时搜索的模型名。"
+    "default": "grok-4.6",
+    "hint": "填写中转实际提供的模型名。模型须支持 Responses API 的 x_search 工具。"
   },
   "extra_body": {
     "description": "搜索额外请求参数（JSON）",
     "type": "text",
     "default": "{}",
-    "hint": "默认发送 search_parameters: {mode: on}，与参考插件一致。只按中转文档调整；不允许覆盖 model/messages/stream。"
+    "hint": "仅限 Responses API 的额外参数。请清除旧 search_parameters/messages 配置；不允许覆盖 model/input/tools/stream 等搜索协议字段。"
   },
   "image_model": {
     "description": "生图模型",
@@ -44,7 +44,7 @@
   "timeout": {
     "description": "接口请求超时（秒）",
     "type": "int",
-    "default": 60,
+    "default": 120,
     "hint": "10–180；生图单次请求超时 120 秒，图片下载超时 20 秒，整个任务最长 150 秒。"
   },
   "max_image_mb": {

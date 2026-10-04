@@ -24,6 +24,7 @@ from astrbot_plugin_x_images.service import (  # noqa: E402
     api_endpoint,
     extract_tweet_ids,
     original_image_url,
+    search_result_ids,
 )
 
 
@@ -70,6 +71,27 @@ adapter = load_adapter()
 JPEG = b"\xff\xd8\xff\xe0test-image"
 
 
+def search_response(*urls, text=""):
+    return {
+        "status": "completed",
+        "output": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": text,
+                        "annotations": [
+                            {"type": "url_citation", "url": url} for url in urls
+                        ],
+                    },
+                ],
+            }
+        ],
+    }
+
+
 def tweet(status_id="123", photos=None):
     return {
         "code": 200,
@@ -82,6 +104,57 @@ def tweet(status_id="123", photos=None):
 
 
 class ParsingTests(unittest.TestCase):
+    def test_recorded_new_api_x_search_response(self):
+        path = Path(__file__).parent / "fixtures" / "x_search_response.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            search_result_ids(data), ["2106353949347664211", "2106324631301062850"]
+        )
+
+    def test_uncited_fabricated_ids_are_never_used(self):
+        text = "\n".join(
+            f"https://x.com/a/status/{sid}"
+            for sid in [
+                "1871234567890123456",
+                "1872345678901234567",
+                "1873456789012345678",
+            ]
+        )
+        with self.assertRaises(PluginError) as exc:
+            search_result_ids(search_response(text=text))
+        self.assertEqual(exc.exception.code, "search_sources_missing")
+
+    def test_reasoning_urls_and_uncited_answers_are_ignored(self):
+        data = search_response(
+            "https://x.com/a/status/123", text="https://x.com/a/status/999"
+        )
+        data["output"].insert(
+            0,
+            {"type": "reasoning", "summary": [{"text": "https://x.com/a/status/888"}]},
+        )
+        self.assertEqual(search_result_ids(data), ["123"])
+
+    def test_unexecuted_tool_text_is_reported(self):
+        with self.assertRaises(PluginError) as exc:
+            search_result_ids(
+                search_response(
+                    text="<tool_call>\nx_keyword_search\nquery\nplana ブルアカ\n</tool_call>"
+                )
+            )
+        self.assertEqual(exc.exception.code, "search_tool_not_executed")
+
+    def test_incomplete_and_non_responses_payloads_are_rejected(self):
+        for data, expected in [
+            (
+                {"choices": [{"message": {"content": "https://x.com/a/status/123"}}]},
+                "search_protocol_error",
+            ),
+            ({"status": "incomplete", "output": []}, "search_incomplete"),
+        ]:
+            with self.assertRaises(PluginError) as exc:
+                search_result_ids(data)
+            self.assertEqual(exc.exception.code, expected)
+
     def test_proxy_config_validation(self):
         for proxy in ["http://127.0.0.1:7890", "http://user:pass@proxy.test:8080"]:
             self.assertEqual(Settings.from_config({"proxy": proxy}).proxy, proxy)
@@ -136,12 +209,10 @@ class ParsingTests(unittest.TestCase):
 
     def test_base_url_and_config_validation(self):
         for base in ["https://relay.test", "https://relay.test/v1/"]:
-            self.assertEqual(
-                api_endpoint(base), "https://relay.test/v1/chat/completions"
-            )
+            self.assertEqual(api_endpoint(base), "https://relay.test/v1/responses")
         self.assertEqual(
             api_endpoint("https://relay.test/api/v1"),
-            "https://relay.test/api/v1/chat/completions",
+            "https://relay.test/api/v1/responses",
         )
         for config in [
             {"max_images": 0},
@@ -164,6 +235,72 @@ class ParsingTests(unittest.TestCase):
 
 
 class ServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_uncited_output_does_not_trigger_tweet_requests(self):
+        requests = []
+
+        def handler(req):
+            requests.append(req)
+            self.assertEqual(req.url.host, "relay.test")
+            return httpx.Response(
+                200,
+                json=search_response(text="https://x.com/a/status/1871234567890123456"),
+            )
+
+        service = await self.service(
+            handler, base_url="https://relay.test", api_key="secret"
+        )
+        with self.assertRaises(PluginError) as exc:
+            await service.lookup("plana ブルアカ")
+        self.assertEqual(exc.exception.code, "search_sources_missing")
+        self.assertEqual(len(requests), 1)
+
+    async def test_all_search_candidates_404_is_not_no_photos(self):
+        def handler(req):
+            if req.url.host == "relay.test":
+                return httpx.Response(
+                    200,
+                    json=search_response(
+                        "https://x.com/a/status/123", "https://x.com/a/status/456"
+                    ),
+                )
+            return httpx.Response(404)
+
+        service = await self.service(
+            handler, base_url="https://relay.test", api_key="secret"
+        )
+        with self.assertRaises(PluginError) as exc:
+            await service.lookup("plana ブルアカ")
+        self.assertEqual(exc.exception.code, "search_candidates_unavailable")
+        self.assertIn("2 条推文", str(exc.exception))
+
+    async def test_search_network_failure_preserves_actual_cause(self):
+        def handler(req):
+            if req.url.host == "relay.test":
+                return httpx.Response(
+                    200, json=search_response("https://x.com/a/status/123")
+                )
+            raise httpx.ConnectError("secret proxy detail")
+
+        service = await self.service(
+            handler, base_url="https://relay.test", api_key="secret"
+        )
+        result = await service.lookup("cat")
+        self.assertEqual(result.resolved_count, 0)
+        self.assertIn("网络", result.warnings[0])
+        self.assertNotIn("secret", result.warnings[0])
+
+    async def test_json_404_and_successful_empty_post_are_distinct(self):
+        service = await self.service(
+            lambda req: httpx.Response(200, json={"code": 404, "tweet": None})
+        )
+        with self.assertRaises(PluginError) as exc:
+            await service.resolve("123")
+        self.assertEqual(exc.exception.code, "post_not_found")
+        service = await self.service(lambda req: httpx.Response(200, json=tweet()))
+        result = await service.lookup("https://x.com/a/status/123")
+        self.assertEqual(result.resolved_count, 1)
+        self.assertEqual(result.photos, [])
+
     async def test_generation_uses_api_client_and_standard_image_payload(self):
         requests = []
 
@@ -327,9 +464,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(req.url.host, "relay.test")
             return httpx.Response(
                 200,
-                json={
-                    "choices": [{"message": {"content": "https://x.com/a/status/123"}}]
-                },
+                json=search_response("https://x.com/a/status/123"),
             )
 
         def media_handler(req):
@@ -371,20 +506,17 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
             requests.append(req)
             if req.url.host == "relay.test":
                 payload = json.loads(req.content)
-                self.assertEqual(payload["search_parameters"], {"mode": "on"})
+                self.assertEqual(payload["tools"], [{"type": "x_search"}])
+                self.assertNotIn("search_parameters", payload)
+                self.assertEqual(req.url.path, "/v1/responses")
                 self.assertFalse(payload["stream"])
                 self.assertEqual(req.headers["authorization"], "Bearer secret")
                 return httpx.Response(
                     200,
-                    json={
-                        "choices": [
-                            {
-                                "message": {
-                                    "content": "https://x.com/NASA/status/123 https://pbs.twimg.com/media/INVENTED.jpg"
-                                }
-                            }
-                        ]
-                    },
+                    json=search_response(
+                        "https://x.com/NASA/status/123",
+                        text="https://pbs.twimg.com/media/INVENTED.jpg",
+                    ),
                 )
             self.assertNotIn("authorization", req.headers)
             if req.url.host == "api.fxtwitter.com":
@@ -454,24 +586,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_citation_only_search(self):
         service = await self.service(
             lambda req: httpx.Response(
-                200,
-                json={
-                    "choices": [
-                        {
-                            "message": {
-                                "content": None,
-                                "annotations": [
-                                    {
-                                        "type": "url_citation",
-                                        "url_citation": {
-                                            "url": "https://x.com/a/status/123"
-                                        },
-                                    },
-                                ],
-                            }
-                        }
-                    ],
-                },
+                200, json=search_response("https://x.com/a/status/123")
             ),
             api_key="secret",
             base_url="https://relay.test",
@@ -482,7 +597,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         for body in [
             {"choices": []},
             {"error": "secret"},
-            {"choices": [{"message": {"content": "no results"}}]},
+            search_response(text="no results"),
         ]:
             service = await self.service(
                 lambda req: httpx.Response(200, json=body),
@@ -539,6 +654,28 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_resolution_failure_is_not_reported_as_no_images(self):
+        self.plugin.service.lookup.return_value = Lookup(warnings=["推文不存在（404）"])
+        result = await self.plugin._run(
+            self.event, "https://x.com/a/status/123", 1, True
+        )
+        self.assertEqual(result["error_code"], "post_resolution_failed")
+        self.assertNotIn("没有静态图片", result["summary"])
+        self.assertIn("不能判断", result["summary"])
+        self.event.send.assert_not_awaited()
+
+    async def test_verified_no_images_and_search_errors_have_different_codes(self):
+        self.plugin.service.lookup.return_value = Lookup(resolved_count=1)
+        result = await self.plugin._run(
+            self.event, "https://x.com/a/status/123", 1, True
+        )
+        self.assertEqual(result["error_code"], "posts_have_no_photos")
+        self.plugin.service.lookup.side_effect = PluginError(
+            "没有搜索来源", code="search_sources_missing"
+        )
+        result = json.loads(await self.plugin.search_x_images(self.event, "cat", 1))
+        self.assertEqual(result["error_code"], "search_sources_missing")
+
     def setUp(self):
         self.plugin = adapter.Main(None, {})
         self.plugin.settings = Settings(max_images=4)

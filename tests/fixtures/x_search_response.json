@@ -1,0 +1,35 @@
+{
+  "model": "grok-4.6-build",
+  "status": "completed",
+  "output": [
+    {
+      "content": [
+        {
+          "type": "output_text",
+          "text": "以下是两条与 Plana（プラナ）和 Blue Archive（ブルアカ）相关的公开推文（均带图片）：\n\nhttps://x.com/lying8180/status/2106353949347664211[[1]](https://x.com/lying8180/status/2106353949347664211)\n\nhttps://x.com/Rafutopia/status/2106324631301062850[[2]](https://x.com/Rafutopia/status/2106324631301062850)",
+          "logprobs": [],
+          "annotations": [
+            {
+              "type": "url_citation",
+              "url": "https://x.com/lying8180/status/2106353949347664211",
+              "start_index": 103,
+              "end_index": 160,
+              "title": "1"
+            },
+            {
+              "type": "url_citation",
+              "url": "https://x.com/Rafutopia/status/2106324631301062850",
+              "start_index": 212,
+              "end_index": 269,
+              "title": "2"
+            }
+          ]
+        }
+      ],
+      "id": "msg_41c8d3ea-5fab-9ccd-a0bd-81e888607963",
+      "role": "assistant",
+      "type": "message",
+      "status": "completed"
+    }
+  ]
+}

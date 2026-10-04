@@ -57,7 +57,7 @@ class Main(Star):
                 timeout=self.settings.timeout,
                 follow_redirects=False,
                 limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
-                headers={"User-Agent": "AstrBot-X-Images/1.2"},
+                headers={"User-Agent": "AstrBot-X-Images/1.3"},
             )
             self._api_client = (
                 self._client
@@ -67,7 +67,7 @@ class Main(Star):
                     trust_env=False,
                     follow_redirects=False,
                     limits=httpx.Limits(max_connections=2, max_keepalive_connections=2),
-                    headers={"User-Agent": "AstrBot-X-Images/1.2"},
+                    headers={"User-Agent": "AstrBot-X-Images/1.3"},
                 )
             )
         except (ValueError, ImportError):
@@ -136,6 +136,7 @@ class Main(Star):
 
         用户想找推特图片、某账号图片时使用。query 可含关键词、from:账号或完整推文链接。
         返回发送状态和真实来源；只有 sent_count 大于零才表示图片已发送，不要重复发送图片。
+        error_code 以 search_ 开头时说明搜索结果或搜索协议有问题，不应笼统称为推特图片接口故障。
 
         Args:
             query(string): 搜索关键词、from:账号、日期要求或完整推文链接。
@@ -200,6 +201,7 @@ class Main(Star):
             self._tasks.add(task)
             await asyncio.wait_for(task, timeout=150)
         except PluginError as exc:
+            report["error_code"] = exc.code
             report["warnings"].append(str(exc))
         except asyncio.TimeoutError:
             report["warnings"].append("本次任务超过 150 秒，已停止后续处理。")
@@ -246,10 +248,19 @@ class Main(Star):
     async def _deliver(self, event, query, count, links_only, report):
         lookup = await self.service.lookup(query, links_only=links_only)
         report["warnings"].extend(lookup.warnings)
+        report["resolved_count"] = lookup.resolved_count
         if not lookup.photos:
-            report["warnings"].append(
-                "推文中没有可用的静态图片；视频、GIF 和引用推文图片不在提取范围内。"
-            )
+            if lookup.resolved_count:
+                report["warnings"].append(
+                    "已解析的推文中没有静态图片；视频、GIF 和引用推文图片不在提取范围内。"
+                )
+                report["error_code"] = "posts_have_no_photos"
+            else:
+                report["warnings"].insert(
+                    0,
+                    "未能解析任何推文，不能判断是否含图片；请查看具体的链接或网络错误。",
+                )
+                report["error_code"] = "post_resolution_failed"
             return
         report["available_count"] = len(lookup.photos)
         # Bound download attempts too, even when candidates fail.
